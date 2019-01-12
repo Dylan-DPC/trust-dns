@@ -2,13 +2,27 @@ use std::net::Ipv4Addr;
 use std::str::FromStr;
 
 use trust_dns::op::{Message, Query};
-use trust_dns::rr::dnssec::SupportedAlgorithms;
-use trust_dns::rr::{Name, RData, RecordType};
+use trust_dns::op::update_message;
+use trust_dns::rr::dnssec::{Algorithm, SupportedAlgorithms, Verifier};
+use trust_dns::proto::rr::dnssec::rdata::{DNSSECRecordType, DNSKEY};
+use trust_dns::proto::rr::{Name, RData, Record, RecordType};
 use trust_dns_server::authority::{Authority, MessageRequest};
+use trust_dns::serialize::binary::{BinEncodable, BinDecodable};
 
-pub fn test_a_lookup<A: Authority>(authority: A) {
-    let query = Query::query(Name::from_str("www.example.com.").unwrap(), RecordType::A);
+pub fn test_insert_record<A: Authority>(mut authority: A) {
+    let record = Record::from_rdata(
+        Name::from_str("insert.example.com.").unwrap(), 
+        8,
+        RecordType::A, 
+        RData::A(Ipv4Addr::new(127, 0, 0, 10))
+    );
+    let message = update_message::create(record.into(), Name::from_str("example.com.").unwrap());
+    let message = message.to_bytes().unwrap();
+    let request = MessageRequest::from_bytes(&message).unwrap();
 
+    assert!(authority.update(&request).expect("create failed"));
+
+    let query = Query::query(Name::from_str("insert.example.com.").unwrap(), RecordType::A);
     let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
 
     match lookup
@@ -17,56 +31,34 @@ pub fn test_a_lookup<A: Authority>(authority: A) {
         .expect("A record not found in authity")
         .rdata()
     {
-        RData::A(ip) => assert_eq!(Ipv4Addr::new(127, 0, 0, 1), *ip),
+        RData::A(ip) => assert_eq!(Ipv4Addr::new(127, 0, 0, 10), *ip),
         _ => panic!("wrong rdata type returned"),
     }
 }
 
-pub fn test_soa<A: Authority>(authority: A) {
-    let lookup = authority.soa();
+pub fn finalize_message(mut message: Message) -> Message {
+    use trust_dns_server::config::dnssec::*;
+    use trust_dns::op::MessageFinalizer;
 
-    match lookup
-        .into_iter()
-        .next()
-        .expect("SOA record not found in authity")
-        .rdata()
+    let signer_name = "authz.example.com.";
+
+    // ed 25519
+    #[cfg(feature = "dnssec-ring")]
     {
-        RData::SOA(soa) => {
-            assert_eq!(Name::from_str("trust-dns.org.").unwrap(), *soa.mname());
-            assert_eq!(Name::from_str("root.trust-dns.org.").unwrap(), *soa.rname());
-            assert_eq!(199609203, soa.serial());
-            assert_eq!(28800, soa.refresh());
-            assert_eq!(7200, soa.retry());
-            assert_eq!(604800, soa.expire());
-            assert_eq!(86400, soa.minimum());
-        }
-        _ => panic!("wrong rdata type returned"),
+        let key_config = KeyConfig {
+            key_path: "tests/named_test_configs/dnssec/ed25519.pk8".to_string(),
+            password: None,
+            algorithm: Algorithm::ED25519.to_string(),
+            signer_name: Some(signer_name.clone().to_string()),
+            is_zone_signing_key: Some(true),
+            is_zone_update_auth: Some(false),
+        };
+
+        let signer = key_config.try_into_signer(signer_name.clone()).expect("failed to read key_config");
+        message.finalize(&signer, 1).expect("failed to sign message");
+
+        message
     }
-}
-
-pub fn test_ns<A: Authority>(authority: A) {
-    let lookup = authority.ns(false, SupportedAlgorithms::new());
-
-    match lookup
-        .into_iter()
-        .next()
-        .expect("NS record not found in authity")
-        .rdata()
-    {
-        RData::NS(name) => assert_eq!(Name::from_str("trust-dns.org.").unwrap(), *name),
-        _ => panic!("wrong rdata type returned"),
-    }
-}
-
-pub fn test_update_errors<A: Authority>(mut authority: A) {
-    use trust_dns::serialize::binary::BinDecodable;
-
-    let message = Message::default();
-    let bytes = message.to_vec().unwrap();
-    let update = MessageRequest::from_bytes(&bytes).unwrap();
-
-    // this is expected to fail, i.e. updates are not allowed
-    assert!(authority.update(&update).is_err());
 }
 
 pub fn add_auth<A: Authority>(authority: &mut A) -> Vec<DNSKEY> {
@@ -150,14 +142,13 @@ pub fn add_auth<A: Authority>(authority: &mut A) -> Vec<DNSKEY> {
     keys
 }
 
-
 macro_rules! define_update_test {
     ($new:ident; $( $f:ident, )*) => {
         $(
             #[test]
             fn $f () {
                 let authority = ::$new("tests/named_test_configs/example.com.zone", module_path!(), stringify!($f));
-                ::authority_battery::basic::$f(authority);
+                ::authority_battery::dynamic_update::$f(authority);
             }
         )*
     }
@@ -166,13 +157,10 @@ macro_rules! define_update_test {
 macro_rules! dynamic_update {
     ($new:ident) => {
         #[cfg(test)]
-        mod dynami_update {
+        mod dynamic_update {
             mod $new {
                 define_update_test!($new;
-                    test_a_lookup,
-                    test_soa,
-                    test_ns,
-                    test_update_errors,
+                    test_insert_record,
                 );
             }
         }

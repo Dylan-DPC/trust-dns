@@ -51,7 +51,7 @@ fn sqlite_update(master_file_path: &str, module: &str, test_name: &str) -> Sqlit
     let config = SqliteConfig {
         zone_file_path: master_file_path.to_string(),
         journal_file_path: journal_path.to_str().unwrap().to_string(),
-        allow_update: false,
+        allow_update: true,
     };
 
     SqliteAuthority::try_from_config(
@@ -67,4 +67,5 @@ fn sqlite_update(master_file_path: &str, module: &str, test_name: &str) -> Sqlit
 basic_battery!(sqlite);
 #[cfg(feature = "dnssec")]
 dnssec_battery!(sqlite);
-dynamic_update!(sqlite);
+#[cfg(feature = "dnssec")]
+dynamic_update!(sqlite_update);

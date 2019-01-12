@@ -371,7 +371,6 @@ pub trait ClientHandle: 'static + Clone + DnsHandle + Send {
     where
         R: IntoRecordSet,
     {
-        // TODO: assert non-empty rrset?
         let rrset = rrset.into_record_set();
         let message = update_message::create(rrset, zone_origin);
         
