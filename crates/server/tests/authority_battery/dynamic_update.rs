@@ -186,79 +186,75 @@ pub fn test_append<A: Authority>(mut authority: A, keys: &[Signer]) {
     }
 }
 
-// #[cfg(feature = "dnssec")]
-// #[test]
-// fn test_append_multi() {
-//     let mut io_loop = Runtime::new().unwrap();
-//     let (bg, mut client, origin) = create_sig0_ready_client(&mut io_loop);
+pub fn test_append_multi<A: Authority>(mut authority: A, keys: &[Signer]) {
+    let name = Name::from_str("append-multi.example.com.").unwrap();
+    for key in keys {
+        let name = Name::from_str(key.algorithm().as_str())
+            .unwrap()
+            .append_name(&name);
 
-//     // append a record
-//     let mut record = Record::with(
-//         Name::from_str("new.example.com").unwrap(),
-//         RecordType::A,
-//         Duration::minutes(5).num_seconds() as u32,
-//     );
-//     record.set_rdata(RData::A(Ipv4Addr::new(100, 10, 100, 10)));
+        // append a record
+        let mut record = Record::with(name.clone(), RecordType::A, 8);
+        record.set_rdata(RData::A(Ipv4Addr::new(100, 10, 100, 10)));
 
-//     // first check the must_exist option
-//     io_loop.spawn(bg);
-//     let result = io_loop
-//         .block_on(client.append(record.clone(), origin.clone(), true))
-//         .expect("append failed");
-//     assert_eq!(result.response_code(), ResponseCode::NXRRSet);
+        // next append to a non-existent RRset
+        let mut message = update_message::append(
+            record.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+            false,
+        );
+        message.finalize(key, 1).expect("failed to sign message");
 
-//     // next append to a non-existent RRset
-//     let result = io_loop
-//         .block_on(client.append(record.clone(), origin.clone(), false))
-//         .expect("append failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        let message = message.to_bytes().unwrap();
+        let request = MessageRequest::from_bytes(&message).unwrap();
 
-//     // verify record contents
-//     let result = io_loop
-//         .block_on(client.query(record.name().clone(), record.dns_class(), record.rr_type()))
-//         .expect("query failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
-//     assert_eq!(result.answers().len(), 1);
-//     assert_eq!(result.answers()[0], record);
+        assert!(authority.update(&request).expect("create failed"));
 
-//     // will fail if already set and not the same value.
-//     let mut record2 = record.clone();
-//     record2.set_rdata(RData::A(Ipv4Addr::new(101, 11, 101, 11)));
-//     let mut record3 = record.clone();
-//     record3.set_rdata(RData::A(Ipv4Addr::new(101, 11, 101, 12)));
+        // will fail if already set and not the same value.
+        let mut record2 = record.clone();
+        record2.set_rdata(RData::A(Ipv4Addr::new(101, 11, 101, 11)));
+        let mut record3 = record.clone();
+        record3.set_rdata(RData::A(Ipv4Addr::new(101, 11, 101, 12)));
 
-//     // build the append set
-//     let mut rrset = record2.clone().into_record_set();
-//     rrset.insert(record3.clone(), 0);
+        // build the append set
+        let mut rrset = RecordSet::from(record2.clone());
+        rrset.insert(record3.clone(), 0);
 
-//     let result = io_loop
-//         .block_on(client.append(rrset, origin.clone(), true))
-//         .expect("create failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        let mut message = update_message::append(
+            rrset.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+            true,
+        );
+        message.finalize(key, 1).expect("failed to sign message");
 
-//     let result = io_loop
-//         .block_on(client.query(record.name().clone(), record.dns_class(), record.rr_type()))
-//         .expect("query failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
-//     assert_eq!(result.answers().len(), 3);
+        let message = message.to_bytes().unwrap();
+        let request = MessageRequest::from_bytes(&message).unwrap();
 
-//     assert!(result.answers().iter().any(|rr| *rr == record));
-//     assert!(result.answers().iter().any(|rr| *rr == record2));
-//     assert!(result.answers().iter().any(|rr| *rr == record3));
+        assert!(authority.update(&request).expect("create failed"));
 
-//     // show that appending the same thing again is ok, but doesn't add any records
-//     // TODO: technically this is a test for the Server, not client...
-//     let result = io_loop
-//         .block_on(client.append(record.clone(), origin.clone(), true))
-//         .expect("create failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        let query = Query::query(name.clone(), RecordType::A);
+        let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
 
-//     let result = io_loop
-//         .block_on(client.query(record.name().clone(), record.dns_class(), record.rr_type()))
-//         .expect("query failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
-//     assert_eq!(result.answers().len(), 3);
-// }
+        assert_eq!(lookup.iter().count(), 3);
+
+        assert!(lookup.iter().any(|rr| *rr == record));
+        assert!(lookup.iter().any(|rr| *rr == record2));
+        assert!(lookup.iter().any(|rr| *rr == record3));
+
+        // show that appending the same thing again is ok, but doesn't add any records
+        // TODO: technically this is a test for the Server, not client...
+        assert!(!authority.update(&request).expect("create failed"));
+
+        let query = Query::query(name.clone(), RecordType::A);
+        let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
+
+        assert_eq!(lookup.iter().count(), 3);
+
+        assert!(lookup.iter().any(|rr| *rr == record));
+        assert!(lookup.iter().any(|rr| *rr == record2));
+        assert!(lookup.iter().any(|rr| *rr == record3));
+    }
+}
 
 // #[cfg(feature = "dnssec")]
 // #[test]
@@ -739,6 +735,7 @@ macro_rules! dynamic_update {
                     test_create,
                     test_create_multi,
                     test_append,
+                    test_append_multi,
                 );
             }
         }
