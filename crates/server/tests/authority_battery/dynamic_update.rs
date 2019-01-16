@@ -50,7 +50,7 @@ pub fn test_create<A: Authority>(mut authority: A, keys: &[Signer]) {
     }
 }
 
-fn test_create_multi<A: Authority>(mut authority: A, keys: &[Signer]) {
+pub fn test_create_multi<A: Authority>(mut authority: A, keys: &[Signer]) {
     let name = Name::from_str("create-multi.example.com.").unwrap();
     for key in keys {
         let name = Name::from_str(key.algorithm().as_str())
@@ -92,73 +92,99 @@ fn test_create_multi<A: Authority>(mut authority: A, keys: &[Signer]) {
     }
 }
 
-// #[cfg(feature = "dnssec")]
-// #[test]
-// fn test_append() {
-//     let mut io_loop = Runtime::new().unwrap();
-//     let (bg, mut client, origin) = create_sig0_ready_client(&mut io_loop);
+pub fn test_append<A: Authority>(mut authority: A, keys: &[Signer]) {
+    let name = Name::from_str("append.example.com.").unwrap();
+    for key in keys {
+        let name = Name::from_str(key.algorithm().as_str())
+            .unwrap()
+            .append_name(&name);
 
-//     // append a record
-//     let mut record = Record::with(
-//         Name::from_str("new.example.com").unwrap(),
-//         RecordType::A,
-//         Duration::minutes(5).num_seconds() as u32,
-//     );
-//     record.set_rdata(RData::A(Ipv4Addr::new(100, 10, 100, 10)));
-//     let record = record;
+        // append a record
+        let mut record = Record::with(name.clone(), RecordType::A, 8);
+        record.set_rdata(RData::A(Ipv4Addr::new(100, 10, 100, 10)));
 
-//     // first check the must_exist option
-//     io_loop.spawn(bg);
-//     let result = io_loop
-//         .block_on(client.append(record.clone(), origin.clone(), true))
-//         .expect("append failed");
-//     assert_eq!(result.response_code(), ResponseCode::NXRRSet);
+        // first check the must_exist option
+        let mut message = update_message::append(
+            record.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+            true,
+        );
+        message.finalize(key, 1).expect("failed to sign message");
 
-//     // next append to a non-existent RRset
-//     let result = io_loop
-//         .block_on(client.append(record.clone(), origin.clone(), false))
-//         .expect("append failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        let message = message.to_bytes().unwrap();
+        let request = MessageRequest::from_bytes(&message).unwrap();
 
-//     // verify record contents
-//     let result = io_loop
-//         .block_on(client.query(record.name().clone(), record.dns_class(), record.rr_type()))
-//         .expect("query failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
-//     assert_eq!(result.answers().len(), 1);
-//     assert_eq!(result.answers()[0], record);
+        assert_eq!(
+            authority.update(&request).unwrap_err(),
+            ResponseCode::NXRRSet
+        );
 
-//     // will fail if already set and not the same value.
-//     let mut record2 = record.clone();
-//     record2.set_rdata(RData::A(Ipv4Addr::new(101, 11, 101, 11)));
-//     let record2 = record2;
+        // next append to a non-existent RRset
+        let mut message = update_message::append(
+            record.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+            false,
+        );
+        message.finalize(key, 1).expect("failed to sign message");
 
-//     let result = io_loop
-//         .block_on(client.append(record2.clone(), origin.clone(), true))
-//         .expect("create failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        let message = message.to_bytes().unwrap();
+        let request = MessageRequest::from_bytes(&message).unwrap();
 
-//     let result = io_loop
-//         .block_on(client.query(record.name().clone(), record.dns_class(), record.rr_type()))
-//         .expect("query failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
-//     assert_eq!(result.answers().len(), 2);
+        assert!(authority.update(&request).expect("create failed"));
 
-//     assert!(result.answers().iter().any(|rr| *rr == record));
-//     assert!(result.answers().iter().any(|rr| *rr == record2));
+        // verify record contents
+        let query = Query::query(name.clone(), RecordType::A);
+        let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
 
-//     // show that appending the same thing again is ok, but doesn't add any records
-//     let result = io_loop
-//         .block_on(client.append(record.clone(), origin.clone(), true))
-//         .expect("create failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        assert_eq!(lookup.iter().count(), 1);
+        assert!(lookup.iter().any(|rr| *rr == record));
 
-//     let result = io_loop
-//         .block_on(client.query(record.name().clone(), record.dns_class(), record.rr_type()))
-//         .expect("query failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
-//     assert_eq!(result.answers().len(), 2);
-// }
+        // will fail if already set and not the same value.
+        let mut record2 = record.clone();
+        record2.set_rdata(RData::A(Ipv4Addr::new(101, 11, 101, 11)));
+
+        let mut message = update_message::append(
+            record2.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+            true,
+        );
+        message.finalize(key, 1).expect("failed to sign message");
+
+        let message = message.to_bytes().unwrap();
+        let request = MessageRequest::from_bytes(&message).unwrap();
+
+        assert!(authority.update(&request).expect("create failed"));
+
+        let query = Query::query(name.clone(), RecordType::A);
+        let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
+
+        assert_eq!(lookup.iter().count(), 2);
+
+        assert!(lookup.iter().any(|rr| *rr == record));
+        assert!(lookup.iter().any(|rr| *rr == record2));
+
+        // show that appending the same thing again is ok, but doesn't add any records
+        let mut message = update_message::append(
+            record2.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+            true,
+        );
+        message.finalize(key, 1).expect("failed to sign message");
+
+        let message = message.to_bytes().unwrap();
+        let request = MessageRequest::from_bytes(&message).unwrap();
+
+        assert!(!authority.update(&request).expect("create failed"));
+
+        let query = Query::query(name, RecordType::A);
+        let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
+
+        assert_eq!(lookup.iter().count(), 2);
+
+        assert!(lookup.iter().any(|rr| *rr == record));
+        assert!(lookup.iter().any(|rr| *rr == record2));
+    }
+}
 
 // #[cfg(feature = "dnssec")]
 // #[test]
@@ -711,6 +737,8 @@ macro_rules! dynamic_update {
             mod $new {
                 define_update_test!($new;
                     test_create,
+                    test_create_multi,
+                    test_append,
                 );
             }
         }
