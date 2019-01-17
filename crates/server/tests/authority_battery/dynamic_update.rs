@@ -7,7 +7,19 @@ use trust_dns::proto::rr::dnssec::rdata::{DNSSECRecordType, DNSKEY};
 use trust_dns::proto::rr::{Name, RData, Record, RecordSet, RecordType};
 use trust_dns::rr::dnssec::{Algorithm, Signer, SupportedAlgorithms, Verifier};
 use trust_dns::serialize::binary::{BinDecodable, BinEncodable};
-use trust_dns_server::authority::{Authority, MessageRequest};
+use trust_dns_server::authority::{Authority, MessageRequest, UpdateResult};
+
+fn update_authority<A: Authority>(
+    mut message: Message,
+    key: &Signer,
+    authority: &mut A,
+) -> UpdateResult<bool> {
+    message.finalize(key, 1).expect("failed to sign message");
+    let message = message.to_bytes().unwrap();
+    let request = MessageRequest::from_bytes(&message).unwrap();
+
+    authority.update(&request)
+}
 
 pub fn test_create<A: Authority>(mut authority: A, keys: &[Signer]) {
     let name = Name::from_str("create.example.com.").unwrap();
@@ -21,13 +33,11 @@ pub fn test_create<A: Authority>(mut authority: A, keys: &[Signer]) {
             RecordType::A,
             RData::A(Ipv4Addr::new(127, 0, 0, 10)),
         );
-        let mut message =
-            update_message::create(record.into(), Name::from_str("example.com.").unwrap());
-        message.finalize(key, 1).expect("failed to sign message");
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(authority.update(&request).expect("create failed"));
+        let message = update_message::create(
+            record.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+        );
+        assert!(update_authority(message, key, &mut authority).expect("create failed"));
 
         let query = Query::query(name, RecordType::A);
         let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
@@ -43,8 +53,10 @@ pub fn test_create<A: Authority>(mut authority: A, keys: &[Signer]) {
         }
 
         // trying to create again should error
+        let mut message =
+            update_message::create(record.into(), Name::from_str("example.com.").unwrap());
         assert_eq!(
-            authority.update(&request).unwrap_err(),
+            update_authority(message, key, &mut authority).unwrap_err(),
             ResponseCode::YXRRSet
         );
     }
@@ -69,14 +81,11 @@ pub fn test_create_multi<A: Authority>(mut authority: A, keys: &[Signer]) {
         rrset.insert(record2.clone(), 0);
         let rrset = rrset;
 
-        let mut message =
-            update_message::create(rrset.into(), Name::from_str("example.com.").unwrap());
-        message.finalize(key, 1).expect("failed to sign message");
-
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(authority.update(&request).expect("create failed"));
+        let message = update_message::create(
+            rrset.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+        );
+        assert!(update_authority(message, key, &mut authority).expect("create failed"));
 
         let query = Query::query(name, RecordType::A);
         let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
@@ -85,8 +94,9 @@ pub fn test_create_multi<A: Authority>(mut authority: A, keys: &[Signer]) {
         assert!(lookup.iter().any(|rr| *rr == record2));
 
         // trying to create again should error
+        let message = update_message::create(rrset.into(), Name::from_str("example.com.").unwrap());
         assert_eq!(
-            authority.update(&request).unwrap_err(),
+            update_authority(message, key, &mut authority).unwrap_err(),
             ResponseCode::YXRRSet
         );
     }
@@ -109,28 +119,18 @@ pub fn test_append<A: Authority>(mut authority: A, keys: &[Signer]) {
             Name::from_str("example.com.").unwrap(),
             true,
         );
-        message.finalize(key, 1).expect("failed to sign message");
-
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
         assert_eq!(
-            authority.update(&request).unwrap_err(),
+            update_authority(message, key, &mut authority).unwrap_err(),
             ResponseCode::NXRRSet
         );
 
         // next append to a non-existent RRset
-        let mut message = update_message::append(
+        let message = update_message::append(
             record.clone().into(),
             Name::from_str("example.com.").unwrap(),
             false,
         );
-        message.finalize(key, 1).expect("failed to sign message");
-
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(authority.update(&request).expect("create failed"));
+        assert!(update_authority(message, key, &mut authority).expect("create failed"));
 
         // verify record contents
         let query = Query::query(name.clone(), RecordType::A);
@@ -143,17 +143,12 @@ pub fn test_append<A: Authority>(mut authority: A, keys: &[Signer]) {
         let mut record2 = record.clone();
         record2.set_rdata(RData::A(Ipv4Addr::new(101, 11, 101, 11)));
 
-        let mut message = update_message::append(
+        let message = update_message::append(
             record2.clone().into(),
             Name::from_str("example.com.").unwrap(),
             true,
         );
-        message.finalize(key, 1).expect("failed to sign message");
-
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(authority.update(&request).expect("create failed"));
+        assert!(update_authority(message, key, &mut authority).expect("append failed"));
 
         let query = Query::query(name.clone(), RecordType::A);
         let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
@@ -164,17 +159,12 @@ pub fn test_append<A: Authority>(mut authority: A, keys: &[Signer]) {
         assert!(lookup.iter().any(|rr| *rr == record2));
 
         // show that appending the same thing again is ok, but doesn't add any records
-        let mut message = update_message::append(
+        let message = update_message::append(
             record2.clone().into(),
             Name::from_str("example.com.").unwrap(),
             true,
         );
-        message.finalize(key, 1).expect("failed to sign message");
-
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(!authority.update(&request).expect("create failed"));
+        assert!(!update_authority(message, key, &mut authority).expect("append failed"));
 
         let query = Query::query(name, RecordType::A);
         let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
@@ -198,17 +188,12 @@ pub fn test_append_multi<A: Authority>(mut authority: A, keys: &[Signer]) {
         record.set_rdata(RData::A(Ipv4Addr::new(100, 10, 100, 10)));
 
         // next append to a non-existent RRset
-        let mut message = update_message::append(
+        let message = update_message::append(
             record.clone().into(),
             Name::from_str("example.com.").unwrap(),
             false,
         );
-        message.finalize(key, 1).expect("failed to sign message");
-
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(authority.update(&request).expect("create failed"));
+        assert!(update_authority(message, key, &mut authority).expect("append failed"));
 
         // will fail if already set and not the same value.
         let mut record2 = record.clone();
@@ -220,17 +205,12 @@ pub fn test_append_multi<A: Authority>(mut authority: A, keys: &[Signer]) {
         let mut rrset = RecordSet::from(record2.clone());
         rrset.insert(record3.clone(), 0);
 
-        let mut message = update_message::append(
+        let message = update_message::append(
             rrset.clone().into(),
             Name::from_str("example.com.").unwrap(),
             true,
         );
-        message.finalize(key, 1).expect("failed to sign message");
-
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(authority.update(&request).expect("create failed"));
+        assert!(update_authority(message, key, &mut authority).expect("append failed"));
 
         let query = Query::query(name.clone(), RecordType::A);
         let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
@@ -243,7 +223,12 @@ pub fn test_append_multi<A: Authority>(mut authority: A, keys: &[Signer]) {
 
         // show that appending the same thing again is ok, but doesn't add any records
         // TODO: technically this is a test for the Server, not client...
-        assert!(!authority.update(&request).expect("create failed"));
+        let message = update_message::append(
+            rrset.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+            true,
+        );
+        assert!(!update_authority(message, key, &mut authority).expect("append failed"));
 
         let query = Query::query(name.clone(), RecordType::A);
         let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
@@ -268,31 +253,23 @@ pub fn test_compare_and_swap<A: Authority>(mut authority: A, keys: &[Signer]) {
         record.set_rdata(RData::A(Ipv4Addr::new(100, 10, 100, 10)));
         let record = record;
 
-        let mut message = update_message::create(
+        let message = update_message::create(
             record.clone().into(),
             Name::from_str("example.com.").unwrap(),
         );
-        message.finalize(key, 1).expect("failed to sign message");
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(authority.update(&request).expect("create failed"));
+        assert!(update_authority(message, key, &mut authority).expect("create failed"));
 
         let current = record;
         let mut new = current.clone();
         new.set_rdata(RData::A(Ipv4Addr::new(101, 11, 101, 11)));
         let new = new;
 
-        let mut message = update_message::compare_and_swap(
+        let message = update_message::compare_and_swap(
             current.clone().into(),
             new.clone().into(),
             Name::from_str("example.com.").unwrap(),
         );
-        message.finalize(key, 1).expect("failed to sign message");
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(authority.update(&request).expect("create failed"));
+        assert!(update_authority(message, key, &mut authority).expect("compare_and_swap failed"));
 
         let query = Query::query(name.clone(), RecordType::A);
         let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
@@ -306,17 +283,13 @@ pub fn test_compare_and_swap<A: Authority>(mut authority: A, keys: &[Signer]) {
         not.set_rdata(RData::A(Ipv4Addr::new(102, 12, 102, 12)));
         let not = not;
 
-        let mut message = update_message::compare_and_swap(
+        let message = update_message::compare_and_swap(
             current.into(),
             not.clone().into(),
             Name::from_str("example.com.").unwrap(),
         );
-        message.finalize(key, 1).expect("failed to sign message");
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
         assert_eq!(
-            authority.update(&request).unwrap_err(),
+            update_authority(message, key, &mut authority).unwrap_err(),
             ResponseCode::NXRRSet
         );
 
@@ -351,11 +324,7 @@ pub fn test_compare_and_swap_multi<A: Authority>(mut authority: A, keys: &[Signe
             current.clone().into(),
             Name::from_str("example.com.").unwrap(),
         );
-        message.finalize(key, 1).expect("failed to sign message");
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(authority.update(&request).expect("create failed"));
+        assert!(update_authority(message, key, &mut authority).expect("create failed"));
 
         let mut new =
             RecordSet::with_ttl(current.name().clone(), current.record_type(), current.ttl());
@@ -372,11 +341,7 @@ pub fn test_compare_and_swap_multi<A: Authority>(mut authority: A, keys: &[Signe
             new.clone().into(),
             Name::from_str("example.com.").unwrap(),
         );
-        message.finalize(key, 1).expect("failed to sign message");
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(authority.update(&request).expect("compare_and_swap failed"));
+        assert!(update_authority(message, key, &mut authority).expect("compare_and_swap failed"));
 
         let query = Query::query(name.clone(), RecordType::A);
         let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
@@ -392,17 +357,13 @@ pub fn test_compare_and_swap_multi<A: Authority>(mut authority: A, keys: &[Signe
         not.set_rdata(RData::A(Ipv4Addr::new(102, 12, 102, 12)));
         let not = not;
 
-        let mut message = update_message::compare_and_swap(
+        let message = update_message::compare_and_swap(
             current.clone().into(),
             not.clone().into(),
             Name::from_str("example.com.").unwrap(),
         );
-        message.finalize(key, 1).expect("failed to sign message");
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
         assert_eq!(
-            authority.update(&request).unwrap_err(),
+            update_authority(message, key, &mut authority).unwrap_err(),
             ResponseCode::NXRRSet
         );
 
@@ -416,18 +377,14 @@ pub fn test_compare_and_swap_multi<A: Authority>(mut authority: A, keys: &[Signe
 }
 
 pub fn test_delete_by_rdata<A: Authority>(mut authority: A, keys: &[Signer]) {
-    let name = Name::from_str("test_delete_by_rdata.example.com.").unwrap();
+    let name = Name::from_str("test-delete-by-rdata.example.com.").unwrap();
     for key in keys {
         let name = Name::from_str(key.algorithm().as_str())
             .unwrap()
             .append_name(&name);
 
         // append a record
-        let mut record1 = Record::with(
-            name.clone(),
-            RecordType::A,
-            8,
-        );
+        let mut record1 = Record::with(name.clone(), RecordType::A, 8);
         record1.set_rdata(RData::A(Ipv4Addr::new(100, 10, 100, 10)));
 
         // first check the must_exist option
@@ -435,41 +392,30 @@ pub fn test_delete_by_rdata<A: Authority>(mut authority: A, keys: &[Signer]) {
             record1.clone().into(),
             Name::from_str("example.com.").unwrap(),
         );
-        message.finalize(key, 1).expect("failed to sign message");
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(!authority.update(&request).expect("delete_by_rdata failed"));
+        assert!(!update_authority(message, key, &mut authority).expect("delete_by_rdata failed"));
 
         // next create to a non-existent RRset
-        let mut message =
-            update_message::create(record1.clone().into(), Name::from_str("example.com.").unwrap());
-        message.finalize(key, 1).expect("failed to sign message");
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(authority.update(&request).expect("delete_by_rdata failed"));
+        let mut message = update_message::create(
+            record1.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+        );
+        assert!(update_authority(message, key, &mut authority).expect("delete_by_rdata failed"));
 
         let mut record2 = record1.clone();
         record2.set_rdata(RData::A(Ipv4Addr::new(101, 11, 101, 11)));
-        let mut message =
-            update_message::append(record2.clone().into(), Name::from_str("example.com.").unwrap(), true);
-        message.finalize(key, 1).expect("failed to sign message");
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(authority.update(&request).expect("append failed"));
+        let message = update_message::append(
+            record2.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+            true,
+        );
+        assert!(update_authority(message, key, &mut authority).expect("append failed"));
 
         // verify record contents
-        let mut message = update_message::delete_by_rdata(
+        let message = update_message::delete_by_rdata(
             record2.clone().into(),
             Name::from_str("example.com.").unwrap(),
         );
-        message.finalize(key, 1).expect("failed to sign message");
-        let message = message.to_bytes().unwrap();
-        let request = MessageRequest::from_bytes(&message).unwrap();
-
-        assert!(authority.update(&request).expect("delete_by_rdata failed"));
+        assert!(update_authority(message, key, &mut authority).expect("delete_by_rdata failed"));
 
         let query = Query::query(name.clone(), RecordType::A);
         let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
@@ -479,81 +425,74 @@ pub fn test_delete_by_rdata<A: Authority>(mut authority: A, keys: &[Signer]) {
     }
 }
 
-// #[cfg(feature = "dnssec")]
-// #[test]
-// fn test_delete_by_rdata_multi() {
-//     let mut io_loop = Runtime::new().unwrap();
-//     let (bg, mut client, origin) = create_sig0_ready_client(&mut io_loop);
+pub fn test_delete_by_rdata_multi<A: Authority>(mut authority: A, keys: &[Signer]) {
+    let name = Name::from_str("test-delete-by-rdata-multi.example.com.").unwrap();
+    for key in keys {
+        let name = Name::from_str(key.algorithm().as_str())
+            .unwrap()
+            .append_name(&name);
+        // append a record
+        let mut rrset = RecordSet::with_ttl(name.clone(), RecordType::A, 8);
 
-//     // append a record
-//     let mut rrset = RecordSet::with_ttl(
-//         Name::from_str("new.example.com").unwrap(),
-//         RecordType::A,
-//         Duration::minutes(5).num_seconds() as u32,
-//     );
+        let record1 = rrset
+            .new_record(&RData::A(Ipv4Addr::new(100, 10, 100, 10)))
+            .clone();
+        let record2 = rrset
+            .new_record(&RData::A(Ipv4Addr::new(100, 10, 100, 11)))
+            .clone();
+        let record3 = rrset
+            .new_record(&RData::A(Ipv4Addr::new(100, 10, 100, 12)))
+            .clone();
+        let record4 = rrset
+            .new_record(&RData::A(Ipv4Addr::new(100, 10, 100, 13)))
+            .clone();
+        let rrset = rrset;
 
-//     let record1 = rrset
-//         .new_record(&RData::A(Ipv4Addr::new(100, 10, 100, 10)))
-//         .clone();
-//     let record2 = rrset
-//         .new_record(&RData::A(Ipv4Addr::new(100, 10, 100, 11)))
-//         .clone();
-//     let record3 = rrset
-//         .new_record(&RData::A(Ipv4Addr::new(100, 10, 100, 12)))
-//         .clone();
-//     let record4 = rrset
-//         .new_record(&RData::A(Ipv4Addr::new(100, 10, 100, 13)))
-//         .clone();
-//     let rrset = rrset;
+        // first check the must_exist option
+        let message = update_message::delete_by_rdata(
+            rrset.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+        );
+        assert!(update_authority(message, key, &mut authority).expect("delete_by_rdata failed"));
 
-//     // first check the must_exist option
-//     io_loop.spawn(bg);
-//     let result = io_loop
-//         .block_on(client.delete_by_rdata(rrset.clone(), origin.clone()))
-//         .expect("delete failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        // next create to a non-existent RRset
+        let message = update_message::create(
+            rrset.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+        );
+        assert!(update_authority(message, key, &mut authority).expect("create failed"));
 
-//     // next create to a non-existent RRset
-//     let result = io_loop
-//         .block_on(client.create(rrset.clone(), origin.clone()))
-//         .expect("create failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        // append a record
+        let mut rrset = RecordSet::with_ttl(name.clone(), RecordType::A, 8);
 
-//     // append a record
-//     let mut rrset = RecordSet::with_ttl(
-//         Name::from_str("new.example.com").unwrap(),
-//         RecordType::A,
-//         Duration::minutes(5).num_seconds() as u32,
-//     );
+        let record1 = rrset.new_record(record1.rdata()).clone();
+        let record3 = rrset.new_record(record3.rdata()).clone();
+        let rrset = rrset;
 
-//     let record1 = rrset.new_record(record1.rdata()).clone();
-//     let record3 = rrset.new_record(record3.rdata()).clone();
-//     let rrset = rrset;
+        let message = update_message::append(
+            rrset.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+            true,
+        );
+        assert!(update_authority(message, key, &mut authority).expect("append failed"));
 
-//     let result = io_loop
-//         .block_on(client.append(rrset.clone(), origin.clone(), true))
-//         .expect("create failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        // verify record contents
+        let message = update_message::delete_by_rdata(
+            rrset.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+        );
+        assert!(update_authority(message, key, &mut authority).expect("delete_by_rdata failed"));
 
-//     // verify record contents
-//     let result = io_loop
-//         .block_on(client.delete_by_rdata(rrset.clone(), origin.clone()))
-//         .expect("delete failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        let query = Query::query(name.clone(), RecordType::A);
+        let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
 
-//     let result = io_loop
-//         .block_on(client.query(
-//             record1.name().clone(),
-//             record1.dns_class(),
-//             record1.rr_type(),
-//         )).expect("query failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
-//     assert_eq!(result.answers().len(), 2);
-//     assert!(!result.answers().iter().any(|rr| *rr == record1));
-//     assert!(result.answers().iter().any(|rr| *rr == record2));
-//     assert!(!result.answers().iter().any(|rr| *rr == record3));
-//     assert!(result.answers().iter().any(|rr| *rr == record4));
-// }
+        assert_eq!(lookup.iter().count(), 2);
+        assert!(!lookup.iter().any(|rr| *rr == record1));
+        assert!(lookup.iter().any(|rr| *rr == record2));
+        assert!(!lookup.iter().any(|rr| *rr == record3));
+        assert!(lookup.iter().any(|rr| *rr == record4));
+    }
+}
 
 // pub fn test_delete_rrset<A: Authority>(mut authority: A, keys: &[Signer]) {
 //     let name = Name::from_str("compare-and-swap-multi.example.com.").unwrap();
@@ -561,7 +500,7 @@ pub fn test_delete_by_rdata<A: Authority>(mut authority: A, keys: &[Signer]) {
 //         let name = Name::from_str(key.algorithm().as_str())
 //             .unwrap()
 //             .append_name(&name);
-    
+
 //     // append a record
 //     let mut record = Record::with(
 //         Name::from_str("new.example.com").unwrap(),
