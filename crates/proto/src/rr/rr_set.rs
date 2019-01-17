@@ -217,7 +217,13 @@ impl RecordSet {
     }
 
     /// creates a new Record as part of this RecordSet, adding the associated RData
+    #[deprecated(note = "use add_rdata")]
     pub fn new_record(&mut self, rdata: &RData) -> &Record {
+        self.add_rdata(rdata)
+    }
+
+    /// creates a new Record as part of this RecordSet, adding the associated RData
+    pub fn add_rdata(&mut self, rdata: &RData) -> &Record {
         assert_eq!(self.record_type, rdata.to_record_type());
 
         let mut record = Record::with(self.name.clone(), self.record_type, self.ttl);
