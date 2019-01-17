@@ -453,7 +453,7 @@ pub fn test_delete_by_rdata_multi<A: Authority>(mut authority: A, keys: &[Signer
             rrset.clone().into(),
             Name::from_str("example.com.").unwrap(),
         );
-        assert!(update_authority(message, key, &mut authority).expect("delete_by_rdata failed"));
+        assert!(!update_authority(message, key, &mut authority).expect("delete_by_rdata failed"));
 
         // next create to a non-existent RRset
         let message = update_message::create(
@@ -474,7 +474,7 @@ pub fn test_delete_by_rdata_multi<A: Authority>(mut authority: A, keys: &[Signer
             Name::from_str("example.com.").unwrap(),
             true,
         );
-        assert!(update_authority(message, key, &mut authority).expect("append failed"));
+        assert!(!update_authority(message, key, &mut authority).expect("append failed"));
 
         // verify record contents
         let message = update_message::delete_by_rdata(
@@ -494,54 +494,52 @@ pub fn test_delete_by_rdata_multi<A: Authority>(mut authority: A, keys: &[Signer
     }
 }
 
-// pub fn test_delete_rrset<A: Authority>(mut authority: A, keys: &[Signer]) {
-//     let name = Name::from_str("compare-and-swap-multi.example.com.").unwrap();
-//     for key in keys {
-//         let name = Name::from_str(key.algorithm().as_str())
-//             .unwrap()
-//             .append_name(&name);
+pub fn test_delete_rrset<A: Authority>(mut authority: A, keys: &[Signer]) {
+    let name = Name::from_str("compare-and-swap-multi.example.com.").unwrap();
+    for key in keys {
+        let name = Name::from_str(key.algorithm().as_str())
+            .unwrap()
+            .append_name(&name);
 
-//     // append a record
-//     let mut record = Record::with(
-//         Name::from_str("new.example.com").unwrap(),
-//         RecordType::A,
-//         8,
-//     );
-//     record.set_rdata(RData::A(Ipv4Addr::new(100, 10, 100, 10)));
+        // append a record
+        let mut record = Record::with(name.clone(), RecordType::A, 8);
+        record.set_rdata(RData::A(Ipv4Addr::new(100, 10, 100, 10)));
 
-//     // first check the must_exist option
-//     io_loop.spawn(bg);
-//     let result = io_loop
-//         .block_on(client.delete_rrset(record.clone(), origin.clone()))
-//         .expect("delete failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        // first check the must_exist option
+        let message = update_message::delete_rrset(
+            record.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+        );
+        assert!(!update_authority(message, key, &mut authority).expect("delete_rrset failed"));
 
-//     // next create to a non-existent RRset
-//     let result = io_loop
-//         .block_on(client.create(record.clone(), origin.clone()))
-//         .expect("create failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        // next create to a non-existent RRset
+        let message = update_message::create(
+            record.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+        );
+        assert!(update_authority(message, key, &mut authority).expect("create failed"));
 
-//     let mut record = record.clone();
-//     record.set_rdata(RData::A(Ipv4Addr::new(101, 11, 101, 11)));
-//     let result = io_loop
-//         .block_on(client.append(record.clone(), origin.clone(), true))
-//         .expect("create failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        let mut record = record.clone();
+        record.set_rdata(RData::A(Ipv4Addr::new(101, 11, 101, 11)));
+        let message = update_message::append(
+            record.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+            true,
+        );
+        assert!(update_authority(message, key, &mut authority).expect("append failed"));
 
-//     // verify record contents
-//     let result = io_loop
-//         .block_on(client.delete_rrset(record.clone(), origin.clone()))
-//         .expect("delete failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        // verify record contents
+        let message = update_message::delete_rrset(
+            record.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+        );
+        assert!(update_authority(message, key, &mut authority).expect("delete_rrset failed"));
 
-//     let result = io_loop
-//         .block_on(client.query(record.name().clone(), record.dns_class(), record.rr_type()))
-//         .expect("query failed");
-//     assert_eq!(result.response_code(), ResponseCode::NXDomain);
-//     assert_eq!(result.answers().len(), 0);
-// }
-// }
+        let query = Query::query(name.clone(), RecordType::A);
+        let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
+        assert_eq!(lookup.iter().count(), 0);
+    }
+}
 
 // #[cfg(feature = "dnssec")]
 // #[test]
@@ -724,6 +722,8 @@ macro_rules! dynamic_update {
                     test_compare_and_swap,
                     test_compare_and_swap_multi,
                     test_delete_by_rdata,
+                    test_delete_by_rdata_multi,
+                    test_delete_rrset,
                 );
             }
         }
