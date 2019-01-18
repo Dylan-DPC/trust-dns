@@ -1,3 +1,5 @@
+#![cfg(feature = "dnssec")]
+
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
