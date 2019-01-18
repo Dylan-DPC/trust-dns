@@ -1,10 +1,9 @@
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
 use trust_dns::op::update_message;
 use trust_dns::op::{Message, Query, ResponseCode};
-use trust_dns::proto::rr::dnssec::rdata::{DNSSECRecordType, DNSKEY};
-use trust_dns::proto::rr::{Name, RData, Record, RecordSet, RecordType};
+use trust_dns::proto::rr::{DNSClass, Name, RData, Record, RecordSet, RecordType};
 use trust_dns::rr::dnssec::{Algorithm, Signer, SupportedAlgorithms, Verifier};
 use trust_dns::serialize::binary::{BinDecodable, BinEncodable};
 use trust_dns_server::authority::{Authority, MessageRequest, UpdateResult};
@@ -541,59 +540,58 @@ pub fn test_delete_rrset<A: Authority>(mut authority: A, keys: &[Signer]) {
     }
 }
 
-// #[cfg(feature = "dnssec")]
-// #[test]
-// fn test_delete_all() {
-//     let mut io_loop = Runtime::new().unwrap();
-//     let (bg, mut client, origin) = create_sig0_ready_client(&mut io_loop);
+pub fn test_delete_all<A: Authority>(mut authority: A, keys: &[Signer]) {
+    let name = Name::from_str("compare-and-swap-multi.example.com.").unwrap();
+    for key in keys {
+        let name = Name::from_str(key.algorithm().as_str())
+            .unwrap()
+            .append_name(&name);
 
-//     // append a record
-//     let mut record = Record::with(
-//         Name::from_str("new.example.com").unwrap(),
-//         RecordType::A,
-//         Duration::minutes(5).num_seconds() as u32,
-//     );
-//     record.set_rdata(RData::A(Ipv4Addr::new(100, 10, 100, 10)));
+        // append a record
+        let mut record = Record::with(name.clone(), RecordType::A, 8);
+        record.set_rdata(RData::A(Ipv4Addr::new(100, 10, 100, 10)));
 
-//     // first check the must_exist option
-//     io_loop.spawn(bg);
-//     let result = io_loop
-//         .block_on(client.delete_all(record.name().clone(), origin.clone(), DNSClass::IN))
-//         .expect("delete failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        // first check the must_exist option
+        let message = update_message::delete_all(
+            record.name().clone().into(),
+            Name::from_str("example.com.").unwrap(),
+            DNSClass::IN,
+        );
+        assert!(!update_authority(message, key, &mut authority).expect("delete_all failed"));
 
-//     // next create to a non-existent RRset
-//     let result = io_loop
-//         .block_on(client.create(record.clone(), origin.clone()))
-//         .expect("create failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        // next create to a non-existent RRset
+        let message = update_message::create(
+            record.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+        );
+        assert!(update_authority(message, key, &mut authority).expect("create failed"));
 
-//     let mut record = record.clone();
-//     record.set_rr_type(RecordType::AAAA);
-//     record.set_rdata(RData::AAAA(Ipv6Addr::new(1, 2, 3, 4, 5, 6, 7, 8)));
-//     let result = io_loop
-//         .block_on(client.create(record.clone(), origin.clone()))
-//         .expect("create failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        let mut record = record.clone();
+        record.set_rr_type(RecordType::AAAA);
+        record.set_rdata(RData::AAAA(Ipv6Addr::new(1, 2, 3, 4, 5, 6, 7, 8)));
+        let message = update_message::create(
+            record.clone().into(),
+            Name::from_str("example.com.").unwrap(),
+        );
+        assert!(update_authority(message, key, &mut authority).expect("create failed"));
 
-//     // verify record contents
-//     let result = io_loop
-//         .block_on(client.delete_all(record.name().clone(), origin.clone(), DNSClass::IN))
-//         .expect("delete failed");
-//     assert_eq!(result.response_code(), ResponseCode::NoError);
+        // verify record contents
+        let message = update_message::delete_all(
+            record.name().clone().into(),
+            Name::from_str("example.com.").unwrap(),
+            DNSClass::IN,
+        );
+        assert!(update_authority(message, key, &mut authority).expect("delete_all failed"));
 
-//     let result = io_loop
-//         .block_on(client.query(record.name().clone(), record.dns_class(), RecordType::A))
-//         .expect("query failed");
-//     assert_eq!(result.response_code(), ResponseCode::NXDomain);
-//     assert_eq!(result.answers().len(), 0);
+        let query = Query::query(name.clone(), RecordType::A);
+        let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
+        assert_eq!(lookup.iter().count(), 0);
 
-//     let result = io_loop
-//         .block_on(client.query(record.name().clone(), record.dns_class(), RecordType::AAAA))
-//         .expect("query failed");
-//     assert_eq!(result.response_code(), ResponseCode::NXDomain);
-//     assert_eq!(result.answers().len(), 0);
-// }
+        let query = Query::query(name.clone(), RecordType::AAAA);
+        let lookup = authority.search(&query.into(), false, SupportedAlgorithms::new());
+        assert_eq!(lookup.iter().count(), 0);
+    }
+}
 
 pub fn add_auth<A: Authority>(authority: &mut A) -> Vec<Signer> {
     use trust_dns::rr::rdata::key::KeyUsage;
@@ -724,6 +722,7 @@ macro_rules! dynamic_update {
                     test_delete_by_rdata,
                     test_delete_by_rdata_multi,
                     test_delete_rrset,
+                    test_delete_all,
                 );
             }
         }
